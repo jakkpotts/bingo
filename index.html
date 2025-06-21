@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Card Generator</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap');
+
+        :root {
+            --primary-color: #007bff;
+            --primary-hover: #0056b3;
+            --light-gray: #f4f7f6;
+            --medium-gray: #ccc;
+            --dark-gray: #333;
+            --background-color: #fff;
+            --border-radius: 8px;
+            --box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        body {
+            font-family: 'Roboto Mono', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 2em;
+            background-color: var(--light-gray);
+            color: var(--dark-gray);
+        }
+        h1 {
+            color: #444;
+            margin-bottom: 1em;
+        }
+        .container {
+            display: flex;
+            flex-direction: row;
+            gap: 2em;
+            width: 100%;
+            max-width: 900px;
+            align-items: stretch;
+        }
+        .controls, .results-container {
+            border: 1px solid var(--medium-gray);
+            padding: 1.5em;
+            border-radius: var(--border-radius);
+            background-color: var(--background-color);
+            box-shadow: var(--box-shadow);
+            flex: 1;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5em;
+            min-width: 300px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5em;
+        }
+        .control-group label {
+            font-weight: bold;
+        }
+        .bin-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .control-group input[type="text"],
+        .control-group input[type="number"] {
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid var(--medium-gray);
+            width: 100%;
+            box-sizing: border-box;
+            font-family: 'Roboto Mono', monospace;
+        }
+        #brand-icon {
+            position: absolute;
+            right: 10px;
+            font-size: 24px;
+            color: #888;
+        }
+
+        button {
+            padding: 12px 18px;
+            border: none;
+            background-color: var(--primary-color);
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1em;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: var(--primary-hover);
+        }
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1em;
+        }
+        .results-header h3 {
+            margin: 0;
+        }
+        #copy-btn {
+            background-color: #6c757d;
+            padding: 5px 12px;
+            font-size: 0.8em;
+        }
+        #copy-btn:hover {
+            background-color: #5a6268;
+        }
+        #copy-feedback {
+            font-size: 0.8em;
+            color: green;
+            min-height: 1em;
+        }
+        #card-numbers-output {
+            width: 100%;
+            height: 85%;
+            flex-grow: 1;
+            padding: 10px;
+            border-radius: var(--border-radius);
+            border: 1px solid var(--medium-gray);
+            font-family: 'Roboto Mono', monospace;
+            box-sizing: border-box;
+            background-color: #fafafa;
+        }
+    </style>
+</head>
+<body>
+    <h1>Credit Card Generator</h1>
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <label for="bin">BIN Prefix</label>
+                 <div class="bin-input-wrapper">
+                    <input type="text" id="bin" value="414720" placeholder="e.g., 414720" autocomplete="off">
+                    <div id="brand-icon"></div>
+                </div>
+            </div>
+            <div class="control-group">
+                <label for="count">Number of cards</label>
+                <input type="number" id="count" value="10" min="1" max="100">
+            </div>
+            <button id="generate-btn">Generate</button>
+        </div>
+        <div class="results-container">
+            <div class="results-header">
+                <h3>Generated Numbers</h3>
+                <div>
+                    <span id="copy-feedback"></span>
+                    <button id="copy-btn">Copy</button>
+                </div>
+            </div>
+            <textarea id="card-numbers-output" readonly placeholder="Generated card numbers will appear here..."></textarea>
+        </div>
+    </div>
+    <script src="main.js"></script>
+</body>
+</html>
