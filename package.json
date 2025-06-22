@@ -1,0 +1,27 @@
+{
+  "name": "bingo-card-validator",
+  "version": "1.0.0",
+  "description": "Credit card generator and validator with BIN lookup",
+  "main": "proxy-server.js",
+  "scripts": {
+    "start": "node proxy-server.js",
+    "dev": "nodemon proxy-server.js",
+    "install-deps": "npm install"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "credit-card",
+    "validation",
+    "bin-lookup",
+    "luhn"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+} 
