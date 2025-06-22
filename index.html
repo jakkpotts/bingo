@@ -148,6 +148,7 @@
             </div>
             <button id="generate-btn">Generate</button>
             <button id="batch-validate-btn" style="margin-top: 10px; background-color: #28a745;">Validate All Generated</button>
+            <button id="batch-full-validate-btn" style="margin-top: 5px; background-color: #007bff; display: none;">Full Stripe Validation (Batch)</button>
             <div id="batch-validation-status" style="margin-top: 10px; font-size: 0.9em;"></div>
         </div>
         <div class="results-container">
@@ -185,6 +186,14 @@
                 <label for="stripe-key">Stripe Publishable Key (Optional)</label>
                 <input type="text" id="stripe-key" placeholder="pk_test_..." autocomplete="off" style="font-size: 12px;">
                 <small style="color: #666; font-size: 0.8em;">Enter your Stripe publishable key to enable payment processor validation</small>
+            </div>
+            <div class="control-group" id="stripe-validation-options" style="display: none;">
+                <label for="stripe-validation-type">Stripe Validation Type</label>
+                <select id="stripe-validation-type" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
+                    <option value="format">Format Check Only (Fast)</option>
+                    <option value="full">Full Validation (Slower, requires server setup)</option>
+                </select>
+                <small style="color: #666; font-size: 0.8em;">Format check validates card structure. Full validation attempts real Stripe verification.</small>
             </div>
             <div class="control-group">
                 <label for="validate-card">Card Number to Validate</label>

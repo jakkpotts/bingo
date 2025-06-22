@@ -21,16 +21,54 @@ The card validation system now includes optional Stripe integration for enhanced
 
 ## How It Works
 
-### Individual Card Validation
+### Current Implementation (Client-Side Only)
 
-When you provide a Stripe key and validate a card:
+Due to Stripe's modern API requirements, this implementation provides:
 
-1. **With Expiry/CVV**: Full Stripe validation using the provided card details
-2. **Without Expiry/CVV**: Basic structure validation using dummy expiry/CVV values
+1. **Format Validation**: Verifies card number format and length
+2. **Brand Detection**: Identifies card brand (Visa, MasterCard, etc.)
+3. **Basic Structure Check**: Ensures the card number follows valid patterns
 
-### Batch Validation
+**Note**: This is client-side validation only. For full Stripe validation (checking with actual payment networks), server-side integration is required.
 
-For batch validation, Stripe will validate card structure using dummy expiry/CVV values since individual expiry dates aren't available for generated cards.
+### Limitations
+
+- **No Network Validation**: Cannot verify if card is active/valid with issuing bank
+- **No Fraud Checks**: No access to Stripe's fraud detection
+- **Format Only**: Only validates card number structure and brand
+
+### Enhanced Batch Full Validation
+
+The application now includes a dedicated **Full Stripe Validation (Batch)** feature:
+
+#### Features:
+- **Persistent Elements**: Uses a single Stripe Elements instance for efficiency
+- **Comprehensive Validation**: Combines Luhn, BIN lookup, and Stripe validation
+- **Enhanced Checks**: Additional brand and length validation
+- **Error Handling**: Graceful handling of validation failures
+- **Progress Tracking**: Real-time progress updates during batch processing
+
+#### How to Use:
+1. **Enter Stripe Key**: The "Full Stripe Validation (Batch)" button appears
+2. **Generate Cards**: Create your test card numbers
+3. **Click Full Validation**: Dedicated button for comprehensive validation
+4. **View Results**: Enhanced statistics including full validation metrics
+
+#### Processing Details:
+- **Initialization**: Sets up persistent Stripe Elements
+- **Individual Processing**: Validates each card with multiple methods
+- **Delay Management**: 750ms delays between validations to respect API limits
+- **Cleanup**: Proper cleanup of Stripe Elements after completion
+
+### For Production Stripe Validation
+
+For real-world payment validation, you would still need:
+
+1. **Server-Side Setup**: Create Setup Intents on your backend
+2. **Live Card Input**: Actual user input through Stripe Elements
+3. **Webhook Handling**: Process Stripe webhooks for confirmation
+
+The current implementation provides enhanced simulation suitable for testing and development.
 
 ## Validation Results
 
