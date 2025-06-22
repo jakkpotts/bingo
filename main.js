@@ -150,29 +150,65 @@ async function validateCardWithBinLookup(cardNumber) {
     }
 }
 
-async function validateCardWithStripe(cardNumber, expMonth, expYear, cvc) {
-    // Note: This requires Stripe.js to be loaded and configured
-    // This is a placeholder for Stripe validation
+async function validateCardWithStripe(cardNumber, expMonth, expYear, cvc, stripePublishableKey = null) {
     try {
         if (typeof Stripe === 'undefined') {
             throw new Error('Stripe.js not loaded');
         }
         
-        // Create card element and validate
-        const cardElement = {
-            number: cardNumber,
-            exp_month: expMonth,
-            exp_year: expYear,
-            cvc: cvc
-        };
+        if (!stripePublishableKey) {
+            return {
+                valid: false,
+                method: 'stripe',
+                error: 'Stripe publishable key not provided'
+            };
+        }
+
+        // Initialize Stripe with the provided key
+        const stripe = Stripe(stripePublishableKey);
         
-        // This would require actual Stripe API integration
-        // For now, return a placeholder response
-        return {
-            valid: false,
-            method: 'stripe',
-            error: 'Stripe integration not configured'
+        // Create payment method data object (Stripe v3 way)
+        const paymentMethodData = {
+            type: 'card',
+            card: {
+                number: cardNumber,
+                exp_month: expMonth,
+                exp_year: expYear,
+                cvc: cvc
+            }
         };
+
+        // Use Stripe's createPaymentMethod to validate the card
+        const result = await stripe.createPaymentMethod(paymentMethodData);
+        
+        if (result.error) {
+            return {
+                valid: false,
+                method: 'stripe',
+                error: result.error.message,
+                details: {
+                    code: result.error.code,
+                    type: result.error.type
+                }
+            };
+        } else {
+            // Payment method created successfully, card is valid
+            const card = result.paymentMethod.card;
+            return {
+                valid: true,
+                method: 'stripe',
+                details: {
+                    payment_method_id: result.paymentMethod.id,
+                    card_brand: card.brand,
+                    card_country: card.country,
+                    card_exp_month: card.exp_month,
+                    card_exp_year: card.exp_year,
+                    card_funding: card.funding,
+                    card_last4: card.last4,
+                    card_fingerprint: card.fingerprint
+                }
+            };
+        }
     } catch (error) {
         return {
             valid: false,
@@ -195,7 +231,7 @@ async function validateCardWithLuhn(cardNumber) {
     };
 }
 
-async function comprehensiveCardValidation(cardNumber, expMonth = null, expYear = null, cvc = null) {
+async function comprehensiveCardValidation(cardNumber, expMonth = null, expYear = null, cvc = null, stripeKey = null) {
     const results = {};
     
     // 1. Basic Luhn validation (structural)
@@ -205,8 +241,21 @@ async function comprehensiveCardValidation(cardNumber, expMonth = null, expYear 
     results.binLookup = await validateCardWithBinLookup(cardNumber);
     
     // 3. Payment processor validation (if credentials available)
-    if (expMonth && expYear && cvc) {
-        results.paymentProcessor = await validateCardWithStripe(cardNumber, expMonth, expYear, cvc);
+    if (expMonth && expYear && cvc && stripeKey) {
+        results.paymentProcessor = await validateCardWithStripe(cardNumber, expMonth, expYear, cvc, stripeKey);
+    } else if (stripeKey && !expMonth && !expYear && !cvc) {
+        // Try Stripe validation without expiry/CVV for basic card validation
+        const currentYear = new Date().getFullYear();
+        const futureMonth = 12;
+        const futureYear = currentYear + 2;
+        const dummyCvv = '123';
+        
+        results.paymentProcessor = await validateCardWithStripe(cardNumber, futureMonth, futureYear, dummyCvv, stripeKey);
+        
+        // Mark as limited validation
+        if (results.paymentProcessor.valid || results.paymentProcessor.error) {
+            results.paymentProcessor.note = 'Validated with dummy expiry/CVV - real card structure check only';
+        }
     }
     
     // Determine overall validity
@@ -280,6 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const countInput = document.getElementById('count');
 
     // Validation elements
+    const stripeKeyInput = document.getElementById('stripe-key');
     const validateCardInput = document.getElementById('validate-card');
     const validateExpInput = document.getElementById('validate-exp');
     const validateCvvInput = document.getElementById('validate-cvv');
@@ -402,11 +452,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Payment processor validation
         if (detailed_results.paymentProcessor) {
-            html += '<div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid #ffc107;">';
+            const borderColor = detailed_results.paymentProcessor.valid ? '#28a745' : 
+                               detailed_results.paymentProcessor.error ? '#dc3545' : '#ffc107';
+            html += '<div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid ' + borderColor + ';">';
             html += '<strong>Payment Processor:</strong> ' + detailed_results.paymentProcessor.method.toUpperCase() + '<br>';
             html += 'Status: ' + (detailed_results.paymentProcessor.valid ? 'VALID' : 'INVALID') + '<br>';
+            
+            if (detailed_results.paymentProcessor.valid && detailed_results.paymentProcessor.details) {
+                const details = detailed_results.paymentProcessor.details;
+                html += 'Card Brand: ' + (details.card_brand || 'Unknown') + '<br>';
+                html += 'Card Country: ' + (details.card_country || 'Unknown') + '<br>';
+                html += 'Card Funding: ' + (details.card_funding || 'Unknown') + '<br>';
+                html += 'Last 4 Digits: ' + (details.card_last4 || 'Unknown') + '<br>';
+                if (details.card_exp_month && details.card_exp_year) {
+                    html += 'Expiry: ' + details.card_exp_month + '/' + details.card_exp_year + '<br>';
+                }
+            }
+            
             if (detailed_results.paymentProcessor.error) {
-                html += 'Note: ' + detailed_results.paymentProcessor.error;
+                html += 'Error: ' + detailed_results.paymentProcessor.error + '<br>';
+            }
+            
+            if (detailed_results.paymentProcessor.note) {
+                html += '<em style="color: #666;">' + detailed_results.paymentProcessor.note + '</em>';
             }
             html += '</div>';
         }
@@ -421,6 +489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const cardNumber = validateCardInput.value.replace(/\s/g, '');
         const expiry = validateExpInput.value;
         const cvv = validateCvvInput.value;
+        const stripeKey = stripeKeyInput.value.trim();
 
         if (!cardNumber || cardNumber.length < 13) {
             validationStatus.textContent = 'Please enter a valid card number';
@@ -439,7 +508,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 expYear = 2000 + parseInt(parts[1], 10);
             }
 
-            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv);
+            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv, stripeKey || null);
             displayValidationResults(results);
             
             validationStatus.textContent = 'Validation complete';
@@ -533,6 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function performBatchValidation() {
         const cardNumbers = cardNumbersOutput.value.trim().split('\n').filter(num => num.trim());
+        const stripeKey = stripeKeyInput.value.trim();
         
         if (cardNumbers.length === 0) {
             batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
@@ -562,7 +632,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const batchPromises = batch.map(async (cardNumber) => {
                     const cleanNumber = cardNumber.trim();
                     try {
-                        const result = await comprehensiveCardValidation(cleanNumber);
+                        const result = await comprehensiveCardValidation(cleanNumber, null, null, null, stripeKey || null);
                         result.cardNumber = cleanNumber;
                         return result;
                     } catch (error) {

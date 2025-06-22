@@ -177,10 +177,15 @@
         </div>
     </div>
 
-    <!-- New Card Validation Section -->
+            <!-- New Card Validation Section -->
     <div class="container" style="margin-top: 2em;">
         <div class="controls">
             <h3>Card Validation</h3>
+            <div class="control-group">
+                <label for="stripe-key">Stripe Publishable Key (Optional)</label>
+                <input type="text" id="stripe-key" placeholder="pk_test_..." autocomplete="off" style="font-size: 12px;">
+                <small style="color: #666; font-size: 0.8em;">Enter your Stripe publishable key to enable payment processor validation</small>
+            </div>
             <div class="control-group">
                 <label for="validate-card">Card Number to Validate</label>
                 <input type="text" id="validate-card" placeholder="Enter 16-digit card number" maxlength="19" autocomplete="off">
@@ -205,6 +210,8 @@
             </div>
         </div>
     </div>
+    <!-- Stripe.js -->
+    <script src="https://js.stripe.com/v3/"></script>
     <script src="main.js"></script>
 </body>
 </html>
