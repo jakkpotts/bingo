@@ -38,7 +38,17 @@ function randomCvv(cardType) {
     const isAmex = cardType.toLowerCase() === "amex";
     const min = isAmex ? 1000 : 100;
     const max = isAmex ? 9999 : 999;
-    return (Math.floor(Math.random() * (max - min + 1)) + min).toString();
+    const cvv = (Math.floor(Math.random() * (max - min + 1)) + min).toString();
+    
+    // Verify the CVV has the correct length
+    const expectedLength = isAmex ? 4 : 3;
+    if (cvv.length !== expectedLength) {
+        console.warn(`Generated CVV has incorrect length: ${cvv.length}, expected ${expectedLength}`);
+        // Force correct length if needed
+        return cvv.padStart(expectedLength, '0').slice(-expectedLength);
+    }
+    
+    return cvv;
 }
 
 function getBrand(binPrefix) {
@@ -103,8 +113,6 @@ function generateCardNumbers(binPrefix = "410039", count = 10) {
     return numbers;
 }
 
-
-
 // Enhanced card generation with optional data
 function generateCardsWithOptions(binPrefix = "410039", count = 10, options = {}) {
     const {
@@ -119,6 +127,15 @@ function generateCardsWithOptions(binPrefix = "410039", count = 10, options = {}
     const results = [];
     const brand = getBrand(binPrefix);
     const length = brand === "amex" ? 15 : 16;
+
+    // Debug log for CVV generation
+    if (includeCvv) {
+        if (useRandomCvv) {
+            console.debug(`Generating ${count} cards with random CVVs (brand: ${brand})`);
+        } else if (customCvv) {
+            console.debug(`Generating ${count} cards with custom CVV: ${customCvv}`);
+        }
+    }
 
     for (let i = 0; i < count; i++) {
         const cardNumber = generateLuhnCard(binPrefix, length);
@@ -135,6 +152,8 @@ function generateCardsWithOptions(binPrefix = "410039", count = 10, options = {}
         if (includeCvv) {
             if (useRandomCvv) {
                 cardData.cvv = randomCvv(brand);
+                // Debug log to verify CVV generation
+                console.debug(`Generated CVV for card ${cardNumber}: ${cardData.cvv}`);
             } else if (customCvv) {
                 cardData.cvv = customCvv;
             }
@@ -514,6 +533,48 @@ async function validateCardWithStripeFull(cardNumber, expMonth, expYear, cvc, st
             };
         }
 
+        // Check CVV if provided
+        let cvvValid = true;
+        let cvvError = null;
+        let cvvDetails = {};
+        
+        if (cvc) {
+            // Basic CVV length validation
+            const expectedCvvLength = cardBrand === 'amex' ? 4 : 3;
+            if (cvc.length !== expectedCvvLength) {
+                cvvValid = false;
+                cvvError = `Invalid CVV length for ${cardBrand} (expected ${expectedCvvLength} digits)`;
+            }
+            
+            cvvDetails = {
+                cvv_provided: true,
+                cvv_length: cvc.length,
+                cvv_valid: cvvValid,
+                cvv_expected_length: expectedCvvLength
+            };
+        } else {
+            cvvDetails = {
+                cvv_provided: false,
+                cvv_length: null,
+                cvv_valid: null
+            };
+        }
+        
+        // If CVV is invalid and provided, return error
+        if (!cvvValid && cvc) {
+            return {
+                valid: false,
+                method: 'stripe_full',
+                error: cvvError,
+                details: {
+                    card_brand: cardBrand,
+                    card_last4: cardNumber.slice(-4),
+                    validation_type: 'full_validation',
+                    ...cvvDetails
+                }
+            };
+        }
+
         // Enhanced validation passed
         return {
             valid: true,
@@ -527,9 +588,7 @@ async function validateCardWithStripeFull(cardNumber, expMonth, expYear, cvc, st
                 expiry_provided: expMonth && expYear ? true : false,
                 expiry_month: expMonth || null,
                 expiry_year: expYear || null,
-                cvv_provided: cvc ? true : false,
-                cvv_length: cvc ? cvc.length : null,
-                cvv_valid: cvc ? true : null, // We can't actually validate CVV without a real transaction
+                ...cvvDetails,
                 note: expMonth && expYear && cvc ? 
                     'Full validation with actual expiry and CVV data' : 
                     'Simulated full validation - some data may be using dummy values'
@@ -678,6 +737,9 @@ async function comprehensiveCardValidation(cardNumber, expMonth = null, expYear 
         // Track what data is using dummy values
         const usingDummyExpiry = !expMonth || !expYear;
         const usingDummyCvv = !cvc;
+        
+        // Log what we're sending to Stripe validation
+        console.debug(`Sending to Stripe validation: cardNumber=${cardNumber}, expMonth=${finalExpMonth}, expYear=${finalExpYear}, cvc=${finalCvv ? `provided (${finalCvv.length} digits${usingDummyCvv ? ', dummy' : ''})` : 'null'}`);
         
         // Call Stripe validation with the best available data
         results.paymentProcessor = await validateCardWithStripe(
@@ -1155,11 +1217,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                         logToOutput(`   Expiry Date: ${expMonth}/${expYear} (validated)`, 'success');
                     }
                     
-                    // Show CVV information if available
+                    // Show CVV information if available - FIXED
                     if (stripe.details.cvv_provided) {
-                        logToOutput(`   CVV: Provided (${stripe.details.cvv_length} digits)`, 'success');
-                        // Add debug info to help troubleshoot
-                        console.debug(`Debug - CVV validation for ${cardNumber}: length=${stripe.details.cvv_length}, valid=${stripe.details.cvv_valid}`);
+                        const cvvLength = stripe.details.cvv_length;
+                        logToOutput(`   CVV: ${stripe.details.cvv} digits) - Validation ${stripe.details.cvv_valid ? 'passed' : 'not possible'}`, 'success');
+                    } else if (stripe.details.cvv_length) {
+                        // Alternative way to check if CVV was provided
+                        logToOutput(`   CVV: ${stripe.details.cvv} digits`, 'success');
                     } else {
                         logToOutput(`   CVV: Not provided (using dummy value)`, 'warning');
                     }
@@ -1178,6 +1242,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const expMonth = stripe.details.expiry_month.toString().padStart(2, '0');
                     const expYear = stripe.details.expiry_year.toString().slice(-2);
                     logToOutput(`   Expiry Date: ${expMonth}/${expYear} (${stripe.details.expiry_valid === false ? 'invalid - card expired' : 'provided'})`, 'error');
+                }
+                
+                // Show CVV information even if validation failed - FIXED
+                if (stripe.details && (stripe.details.cvv_provided || stripe.details.cvv_length)) {
+                    const cvvLength = stripe.details.cvv_length;
+                    logToOutput(`   CVV: ${stripe.details.cvv}`, 'info');
                 }
             }
         } else {
@@ -1307,6 +1377,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Stripe</th>';
         html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Brand</th>';
         html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Bank/Country</th>';
+        html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Expiry</th>';
+        html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: center;">CVV</th>';
         html += '<th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Real?</th>';
         html += '</tr></thead><tbody>';
 
@@ -1339,6 +1411,42 @@ document.addEventListener('DOMContentLoaded', async () => {
                 bankCountry = parts.join(', ');
             }
             html += `<td style="border: 1px solid #ddd; padding: 6px;">${bankCountry || 'Unknown'}</td>`;
+            
+            // Add expiry column
+            let expiryInfo = 'N/A';
+            if (result.detailed_results.paymentProcessor?.details?.expiry_provided) {
+                const expMonth = result.detailed_results.paymentProcessor.details.expiry_month;
+                const expYear = result.detailed_results.paymentProcessor.details.expiry_year;
+                if (expMonth && expYear) {
+                    const formattedMonth = String(expMonth).padStart(2, '0');
+                    const formattedYear = String(expYear).slice(-2);
+                    expiryInfo = `${formattedMonth}/${formattedYear}`;
+                    
+                    // Add validation indicator
+                    if (result.detailed_results.paymentProcessor.details.expiry_valid === false) {
+                        expiryInfo += ' ❌';
+                    } else if (result.detailed_results.paymentProcessor.details.expiry_valid === true) {
+                        expiryInfo += ' ✅';
+                    }
+                }
+            }
+            html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${expiryInfo}</td>`;
+            
+            // Add CVV column
+            let cvvInfo = 'N/A';
+            if (result.detailed_results.paymentProcessor?.details?.cvv_provided) {
+                const cvvLength = result.detailed_results.paymentProcessor.details.cvv_length;
+                cvvInfo = `${cvvLength} digits`;
+                
+                // Add validation indicator if available
+                if (result.detailed_results.paymentProcessor.details.cvv_valid === false) {
+                    cvvInfo += ' ❌';
+                } else if (result.detailed_results.paymentProcessor.details.cvv_valid === true) {
+                    cvvInfo += ' ✅';
+                }
+            }
+            html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${cvvInfo}</td>`;
+            
             html += `<td style="border: 1px solid #ddd; padding: 6px; text-align: center;">${result.overall.likely_real_card ? '✅' : '❌'}</td>`;
             html += '</tr>';
         });
@@ -1412,7 +1520,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     hasAdditionalData: false
                 };
             }
-        }).filter(data => data.cardNumber && /^\d+$/.test(data.cardNumber)); // Only keep valid card numbers
+        }).filter(data => data.cardNumber && /^\d+$/.test(data.cardNumber.replace(/\s/g, ''))); // Only keep valid card numbers, allowing for spaces
         
         if (cardData.length === 0) {
             batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
@@ -1438,8 +1546,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Count how many have additional data
         const cardsWithAdditionalData = cardData.filter(data => data.hasAdditionalData).length;
+        const cardsWithCvv = cardData.filter(data => data.cvv).length;
         if (cardsWithAdditionalData > 0) {
-            logToOutput(`💳 ${cardsWithAdditionalData} cards have expiry/CVV data that will be used in validation`, 'info');
+            logToOutput(`💳 ${cardsWithAdditionalData} cards have additional data (${cardsWithCvv} with CVV) that will be used in validation`, 'info');
         }
         
         logToOutput('='.repeat(60), 'info');
@@ -1451,6 +1560,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             bin_recognized: 0,
             likely_real: 0,
             stripe_validated: 0,
+            with_cvv: cardsWithCvv,
             brands: {}
         };
 
@@ -1463,6 +1573,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const batch = cardData.slice(i, i + batchSize);
                 const batchPromises = batch.map(async (cardInfo) => {
                     const { cardNumber, expiry, cvv } = cardInfo;
+                    
+                    // Clean card number (remove spaces)
+                    const cleanCardNumber = cardNumber.replace(/\s/g, '');
+                    
                     try {
                         // Use actual expiry/CVV data if available, otherwise null (will use dummy)
                         const expMonth = expiry ? expiry.month : null;
@@ -1480,30 +1594,38 @@ document.addEventListener('DOMContentLoaded', async () => {
                         // Handle CVV information with more detail
                         if (cvv) {
                             // Show CVV length but mask the actual value
-                            dataUsed.push(`CVV: ${'*'.repeat(cvv.length)} (${cvv.length} digits)`);
+                            // dataUsed.push(`CVV: ${'*'.repeat(cvv.length)} (${cvv.length} digits)`);
                             
                             // Debug log to verify the actual CVV value (masked in output)
-                            console.debug(`Debug - Card ${cardNumber} has CVV: ${cvv}`);
+                            console.debug(`Debug - Card ${cleanCardNumber} has CVV: ${cvv}`);
                         }
                         
                         if (dataUsed.length > 0) {
-                            logToOutput(`🔍 Validating ${cardNumber} with actual data: ${dataUsed.join(', ')}`, 'info');
+                            logToOutput(`🔍 Validating ${cleanCardNumber} with actual data: ${dataUsed.join(', ')}`, 'info');
                         } else {
-                            logToOutput(`🔍 Validating ${cardNumber} (no expiry/CVV data - using dummy values)`, 'warning');
+                            logToOutput(`🔍 Validating ${cleanCardNumber} (no expiry/CVV data - using dummy values)`, 'warning');
                         }
                         
                         // Always use full validation with actual card data
-                        const result = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvvValue, STRIPE_KEY, 'full');
-                        result.cardNumber = cardNumber;
+                        const result = await comprehensiveCardValidation(cleanCardNumber, expMonth, expYear, cvvValue, STRIPE_KEY, 'full');
+                        result.cardNumber = cleanCardNumber;
+                        
+                        // Add CVV info to result for reference
+                        if (!result.cvvInfo && cvvValue) {
+                            result.cvvInfo = {
+                                provided: true,
+                                length: cvvValue.length
+                            };
+                        }
                         
                         // Log individual card result to verbose output
-                        await displayValidationResults(cardNumber, result);
+                        await displayValidationResults(cleanCardNumber, result);
                         
                         return result;
                     } catch (error) {
-                        logToOutput(`❌ Error validating ${cardNumber}: ${error.message}`, 'error');
+                        logToOutput(`❌ Error validating ${cleanCardNumber}: ${error.message}`, 'error');
                         return {
-                            cardNumber: cardNumber,
+                            cardNumber: cleanCardNumber,
                             overall: {
                                 structurally_valid: false,
                                 bin_recognized: false,
@@ -1547,6 +1669,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Log final summary
             logToOutput('\n📈 BATCH VALIDATION COMPLETE', 'header');
             logToOutput(`Total Cards: ${summary.total}`, 'info');
+            logToOutput(`Cards with CVV: ${summary.with_cvv}`, 'info');
             logToOutput(`Structurally Valid: ${summary.luhn_valid} (${((summary.luhn_valid / summary.total) * 100).toFixed(1)}%)`, 'info');
             logToOutput(`BIN Recognized: ${summary.bin_recognized} (${((summary.bin_recognized / summary.total) * 100).toFixed(1)}%)`, 'info');
             logToOutput(`Stripe Validated: ${summary.stripe_validated} (${((summary.stripe_validated / summary.total) * 100).toFixed(1)}%)`, 'info');
@@ -1566,8 +1689,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             batchValidateBtn.textContent = 'Validate All Generated Cards';
         }
     }
-
-
 
     function exportBatchResults() {
         const results = batchValidationOutput.innerHTML;
@@ -1603,8 +1724,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
     }
-
-
 
     // Event listeners
     binInput.addEventListener('input', updateBrandIcon);
