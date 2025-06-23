@@ -429,6 +429,9 @@ class StripeBatchValidator {
 // Enhanced individual full validation function
 async function validateCardWithStripeFull(cardNumber, expMonth, expYear, cvc, stripePublishableKey) {
     try {
+        // Debug log to verify the CVV is being received correctly
+        console.debug(`validateCardWithStripeFull received: cardNumber=${cardNumber}, expMonth=${expMonth}, expYear=${expYear}, cvc=${cvc ? 'provided (' + cvc.length + ' digits)' : 'null'}`);
+        
         if (typeof Stripe === 'undefined') {
             throw new Error('Stripe.js not loaded');
         }
@@ -477,6 +480,39 @@ async function validateCardWithStripeFull(cardNumber, expMonth, expYear, cvc, st
                 }
             };
         }
+        
+        // Check expiry if provided
+        let expiryValid = true;
+        let expiryError = null;
+        
+        if (expMonth && expYear) {
+            // Check if expiry is valid
+            const currentDate = new Date();
+            const currentYear = currentDate.getFullYear();
+            const currentMonth = currentDate.getMonth() + 1; // JS months are 0-based
+            
+            if (expYear < currentYear || (expYear === currentYear && expMonth < currentMonth)) {
+                expiryValid = false;
+                expiryError = 'Card expired';
+            }
+        }
+        
+        if (!expiryValid) {
+            return {
+                valid: false,
+                method: 'stripe_full',
+                error: expiryError,
+                details: {
+                    card_brand: cardBrand,
+                    card_last4: cardNumber.slice(-4),
+                    validation_type: 'full_validation',
+                    expiry_provided: true,
+                    expiry_month: expMonth,
+                    expiry_year: expYear,
+                    expiry_valid: false
+                }
+            };
+        }
 
         // Enhanced validation passed
         return {
@@ -488,7 +524,15 @@ async function validateCardWithStripeFull(cardNumber, expMonth, expYear, cvc, st
                 card_length: cardNumber.length,
                 validation_type: 'full_validation',
                 enhanced_checks: 'passed',
-                note: 'Simulated full validation - actual Stripe validation requires live card input'
+                expiry_provided: expMonth && expYear ? true : false,
+                expiry_month: expMonth || null,
+                expiry_year: expYear || null,
+                cvv_provided: cvc ? true : false,
+                cvv_length: cvc ? cvc.length : null,
+                cvv_valid: cvc ? true : null, // We can't actually validate CVV without a real transaction
+                note: expMonth && expYear && cvc ? 
+                    'Full validation with actual expiry and CVV data' : 
+                    'Simulated full validation - some data may be using dummy values'
             }
         };
 
@@ -621,22 +665,39 @@ async function comprehensiveCardValidation(cardNumber, expMonth = null, expYear 
     
     // 3. Payment processor validation (if credentials available)
     if (stripeKey) {
-        if (expMonth && expYear && cvc) {
-            // Use provided expiry and CVV
-            results.paymentProcessor = await validateCardWithStripe(cardNumber, expMonth, expYear, cvc, stripeKey, stripeValidationType);
-        } else {
-            // Use dummy expiry/CVV for validation
-            const currentYear = new Date().getFullYear();
-            const futureMonth = 12;
-            const futureYear = currentYear + 2;
-            const dummyCvv = '123';
-            
-            results.paymentProcessor = await validateCardWithStripe(cardNumber, futureMonth, futureYear, dummyCvv, stripeKey, stripeValidationType);
-            
-            // Mark as validation with dummy data
-            if (results.paymentProcessor.valid || results.paymentProcessor.error) {
-                if (!results.paymentProcessor.note) {
-                    results.paymentProcessor.note = 'Validated with dummy expiry/CVV for card structure check';
+        // Use provided values when available, fall back to dummy values when needed
+        const currentYear = new Date().getFullYear();
+        
+        // Use provided expiry month/year or fall back to dummy values
+        const finalExpMonth = expMonth || 12; // December
+        const finalExpYear = expYear || (currentYear + 2); // 2 years in future
+        
+        // Use provided CVV or fall back to dummy value
+        const finalCvv = cvc || '123';
+        
+        // Track what data is using dummy values
+        const usingDummyExpiry = !expMonth || !expYear;
+        const usingDummyCvv = !cvc;
+        
+        // Call Stripe validation with the best available data
+        results.paymentProcessor = await validateCardWithStripe(
+            cardNumber, 
+            finalExpMonth, 
+            finalExpYear, 
+            finalCvv, 
+            stripeKey, 
+            stripeValidationType
+        );
+        
+        // Add note about dummy data if needed
+        if (results.paymentProcessor.valid || results.paymentProcessor.error) {
+            if (!results.paymentProcessor.note) {
+                if (usingDummyExpiry && usingDummyCvv) {
+                    results.paymentProcessor.note = 'Validated with dummy expiry and CVV';
+                } else if (usingDummyExpiry) {
+                    results.paymentProcessor.note = 'Validated with dummy expiry (12/' + (currentYear + 2).toString().slice(-2) + ')';
+                } else if (usingDummyCvv) {
+                    results.paymentProcessor.note = 'Validated with dummy CVV (123)';
                 }
             }
         }
@@ -781,18 +842,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const customCvvInput = document.getElementById('custom-cvv');
 
     // Validation elements
-    const stripeValidationOptions = document.getElementById('stripe-validation-options');
-    const stripeValidationType = document.getElementById('stripe-validation-type');
     const validateCardInput = document.getElementById('validate-card');
     const validateExpInput = document.getElementById('validate-exp');
     const validateCvvInput = document.getElementById('validate-cvv');
     const validateBtn = document.getElementById('validate-btn');
     const validationStatus = document.getElementById('validation-status');
     const validationOutput = document.getElementById('validation-output');
+    const validationSummary = document.getElementById('validation-summary');
+    const clearLogBtn = document.getElementById('clear-log-btn');
 
     // Batch validation elements
     const batchValidateBtn = document.getElementById('batch-validate-btn');
-    const batchFullValidateBtn = document.getElementById('batch-full-validate-btn');
     const batchValidationStatus = document.getElementById('batch-validation-status');
     const batchResultsContainer = document.getElementById('batch-results-container');
     const batchValidationOutput = document.getElementById('batch-validation-output');
@@ -812,6 +872,45 @@ document.addEventListener('DOMContentLoaded', async () => {
         httpsWarning.style.borderColor = '#90caf9';
         httpsWarning.style.color = '#1565c0';
         httpsWarning.style.display = 'block';
+    }
+
+    // Verbose logging system
+    let validationCount = 0;
+    let validCards = 0;
+    let invalidCards = 0;
+
+    function logToOutput(message, type = 'info') {
+        const timestamp = new Date().toLocaleTimeString();
+        const colors = {
+            info: '#e0e0e0',
+            success: '#4caf50',
+            error: '#f44336',
+            warning: '#ff9800',
+            header: '#2196f3'
+        };
+        
+        const coloredMessage = `[${timestamp}] ${message}`;
+        validationOutput.textContent += coloredMessage + '\n';
+        validationOutput.scrollTop = validationOutput.scrollHeight;
+    }
+
+    function updateValidationSummary() {
+        const successRate = validationCount > 0 ? ((validCards / validationCount) * 100).toFixed(1) : 0;
+        validationSummary.innerHTML = `
+            <strong>Validation Summary:</strong> 
+            Total: ${validationCount} | 
+            Valid: ${validCards} | 
+            Invalid: ${invalidCards} | 
+            Success Rate: ${successRate}%
+        `;
+    }
+
+    function clearValidationLog() {
+        validationOutput.textContent = 'Ready for validation...';
+        validationCount = 0;
+        validCards = 0;
+        invalidCards = 0;
+        updateValidationSummary();
     }
 
     // Helper functions for custom inputs
@@ -982,111 +1081,144 @@ document.addEventListener('DOMContentLoaded', async () => {
         return value;
     }
 
-    function displayValidationResults(results) {
+    async function displayValidationResults(cardNumber, results) {
         const { overall, detailed_results } = results;
         
-        let html = '<div style="font-size: 14px;">';
+        validationCount++;
+        if (overall.likely_real_card) {
+            validCards++;
+        } else {
+            invalidCards++;
+        }
+
+        // Log header
+        logToOutput(`\n=== VALIDATING CARD: ${cardNumber} ===`, 'header');
         
-        // Overall summary
-        html += '<div style="margin-bottom: 15px; padding: 10px; border-radius: 5px; background-color: ' + 
-                (overall.likely_real_card ? '#d4edda' : '#f8d7da') + ';">';
-        html += '<h4 style="margin: 0 0 10px 0;">Overall Assessment</h4>';
-        html += '<p><strong>Likely Real Card:</strong> ' + (overall.likely_real_card ? 'YES' : 'NO') + '</p>';
-        html += '<p><strong>Structurally Valid:</strong> ' + (overall.structurally_valid ? 'YES' : 'NO') + '</p>';
-        html += '<p><strong>BIN Recognized:</strong> ' + (overall.bin_recognized ? 'YES' : 'NO') + '</p>';
-        html += '<p><strong>Processor Validated:</strong> ' + (overall.processor_valid ? 'YES' : 'NO') + '</p>';
-        html += '</div>';
-
-        // Detailed results
-        html += '<div style="margin-bottom: 15px;">';
-        html += '<h4>Detailed Results</h4>';
-
-        // Luhn validation
+        // Step 1: Luhn validation
+        logToOutput('Step 1: Luhn Algorithm Validation', 'header');
         if (detailed_results.luhn) {
-            html += '<div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid #007bff;">';
-            html += '<strong>Luhn Validation:</strong> ' + (detailed_results.luhn.valid ? 'PASS' : 'FAIL') + '<br>';
-            html += 'Brand: ' + detailed_results.luhn.details.brand + '<br>';
-            html += 'Length: ' + detailed_results.luhn.details.length + ' digits';
-            html += '</div>';
+            const luhn = detailed_results.luhn;
+            if (luhn.valid) {
+                logToOutput(`✅ Luhn Check: PASSED (checksum valid)`, 'success');
+                logToOutput(`   Brand: ${luhn.details.brand || 'Unknown'}`, 'info');
+                logToOutput(`   Length: ${luhn.details.length} digits`, 'info');
+            } else {
+                logToOutput(`❌ Luhn Check: FAILED`, 'error');
+                if (luhn.error) {
+                    logToOutput(`   Error: ${luhn.error}`, 'error');
+                }
+            }
         }
 
-        // BIN lookup
+        // Step 2: BIN lookup
+        logToOutput('\nStep 2: BIN Database Lookup', 'header');
         if (detailed_results.binLookup) {
-            html += '<div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid ' + 
-                    (detailed_results.binLookup.valid ? '#28a745' : '#dc3545') + ';">';
-            html += '<strong>BIN Lookup:</strong> ' + (detailed_results.binLookup.valid ? 'SUCCESS' : 'FAILED') + '<br>';
-            if (detailed_results.binLookup.valid && detailed_results.binLookup.details) {
-                const details = detailed_results.binLookup.details;
-                html += 'Scheme: ' + (details.scheme || 'Unknown') + '<br>';
-                html += 'Type: ' + (details.type || 'Unknown') + '<br>';
-                html += 'Brand: ' + (details.brand || 'Unknown') + '<br>';
-                if (details.country) {
-                    html += 'Country: ' + details.country.name + ' (' + details.country.alpha2 + ')<br>';
+            const bin = detailed_results.binLookup;
+            if (bin.valid) {
+                logToOutput(`✅ BIN Lookup: SUCCESS`, 'success');
+                if (bin.details) {
+                    logToOutput(`   Scheme: ${bin.details.scheme || 'Unknown'}`, 'info');
+                    logToOutput(`   Type: ${bin.details.type || 'Unknown'}`, 'info');
+                    logToOutput(`   Brand: ${bin.details.brand || 'Unknown'}`, 'info');
+                    if (bin.details.country) {
+                        logToOutput(`   Country: ${bin.details.country.name} (${bin.details.country.alpha2})`, 'info');
+                    }
+                    if (bin.details.bank) {
+                        logToOutput(`   Bank: ${bin.details.bank.name}`, 'info');
+                    }
                 }
-                if (details.bank) {
-                    html += 'Bank: ' + details.bank.name + '<br>';
+            } else {
+                logToOutput(`❌ BIN Lookup: FAILED`, 'error');
+                if (bin.error) {
+                    logToOutput(`   Error: ${bin.error}`, 'error');
                 }
-            } else if (detailed_results.binLookup.error) {
-                html += 'Error: ' + detailed_results.binLookup.error;
             }
-            html += '</div>';
         }
 
-        // Payment processor validation
+        // Step 3: Stripe validation
+        logToOutput('\nStep 3: Stripe Payment Processor Validation', 'header');
         if (detailed_results.paymentProcessor) {
-            const borderColor = detailed_results.paymentProcessor.valid ? '#28a745' : 
-                               detailed_results.paymentProcessor.error ? '#dc3545' : '#ffc107';
-            html += '<div style="margin-bottom: 10px; padding: 8px; border-left: 3px solid ' + borderColor + ';">';
-            html += '<strong>Payment Processor:</strong> ' + detailed_results.paymentProcessor.method.toUpperCase() + '<br>';
-            html += 'Status: ' + (detailed_results.paymentProcessor.valid ? 'VALID' : 'INVALID') + '<br>';
-            
-            if (detailed_results.paymentProcessor.valid && detailed_results.paymentProcessor.details) {
-                const details = detailed_results.paymentProcessor.details;
-                html += 'Card Brand: ' + (details.card_brand || 'Unknown') + '<br>';
-                html += 'Card Country: ' + (details.card_country || 'Unknown') + '<br>';
-                html += 'Card Funding: ' + (details.card_funding || 'Unknown') + '<br>';
-                html += 'Last 4 Digits: ' + (details.card_last4 || 'Unknown') + '<br>';
-                if (details.card_exp_month && details.card_exp_year) {
-                    html += 'Expiry: ' + details.card_exp_month + '/' + details.card_exp_year + '<br>';
+            const stripe = detailed_results.paymentProcessor;
+            if (stripe.valid) {
+                logToOutput(`✅ Stripe Validation: PASSED`, 'success');
+                logToOutput(`   Method: ${stripe.method.toUpperCase()}`, 'info');
+                if (stripe.details) {
+                    if (stripe.details.card_brand) logToOutput(`   Card Brand: ${stripe.details.card_brand}`, 'info');
+                    if (stripe.details.card_country) logToOutput(`   Card Country: ${stripe.details.card_country}`, 'info');
+                    if (stripe.details.card_funding) logToOutput(`   Card Funding: ${stripe.details.card_funding}`, 'info');
+                    if (stripe.details.card_last4) logToOutput(`   Last 4: ${stripe.details.card_last4}`, 'info');
+                    
+                    // Show expiry information if available
+                    if (stripe.details.expiry_provided) {
+                        const expMonth = stripe.details.expiry_month.toString().padStart(2, '0');
+                        const expYear = stripe.details.expiry_year.toString().slice(-2);
+                        logToOutput(`   Expiry Date: ${expMonth}/${expYear} (validated)`, 'success');
+                    }
+                    
+                    // Show CVV information if available
+                    if (stripe.details.cvv_provided) {
+                        logToOutput(`   CVV: Provided (${stripe.details.cvv_length} digits)`, 'success');
+                        // Add debug info to help troubleshoot
+                        console.debug(`Debug - CVV validation for ${cardNumber}: length=${stripe.details.cvv_length}, valid=${stripe.details.cvv_valid}`);
+                    } else {
+                        logToOutput(`   CVV: Not provided (using dummy value)`, 'warning');
+                    }
+                }
+                if (stripe.note) {
+                    logToOutput(`   Note: ${stripe.note}`, 'warning');
+                }
+            } else {
+                logToOutput(`❌ Stripe Validation: FAILED`, 'error');
+                if (stripe.error) {
+                    logToOutput(`   Error: ${stripe.error}`, 'error');
+                }
+                
+                // Show expiry information even if validation failed
+                if (stripe.details && stripe.details.expiry_provided) {
+                    const expMonth = stripe.details.expiry_month.toString().padStart(2, '0');
+                    const expYear = stripe.details.expiry_year.toString().slice(-2);
+                    logToOutput(`   Expiry Date: ${expMonth}/${expYear} (${stripe.details.expiry_valid === false ? 'invalid - card expired' : 'provided'})`, 'error');
                 }
             }
-            
-            if (detailed_results.paymentProcessor.error) {
-                html += 'Error: ' + detailed_results.paymentProcessor.error + '<br>';
-            }
-            
-            if (detailed_results.paymentProcessor.note) {
-                html += '<em style="color: #666;">' + detailed_results.paymentProcessor.note + '</em>';
-            }
-            html += '</div>';
+        } else {
+            logToOutput(`⚠️ Stripe validation not performed (no key available)`, 'warning');
         }
 
-        html += '</div>';
-        html += '</div>';
-
-        validationOutput.innerHTML = html;
+        // Final assessment
+        logToOutput('\n--- FINAL ASSESSMENT ---', 'header');
+        logToOutput(`Structurally Valid: ${overall.structurally_valid ? 'YES' : 'NO'}`, overall.structurally_valid ? 'success' : 'error');
+        logToOutput(`BIN Recognized: ${overall.bin_recognized ? 'YES' : 'NO'}`, overall.bin_recognized ? 'success' : 'error');
+        logToOutput(`Processor Valid: ${overall.processor_valid ? 'YES' : 'NO'}`, overall.processor_valid ? 'success' : 'error');
+        logToOutput(`LIKELY REAL CARD: ${overall.likely_real_card ? 'YES' : 'NO'}`, overall.likely_real_card ? 'success' : 'error');
+        
+        logToOutput('='.repeat(50), 'info');
+        
+        updateValidationSummary();
     }
 
     async function validateCard() {
         const cardNumber = validateCardInput.value.replace(/\s/g, '');
         const expiry = validateExpInput.value;
         const cvv = validateCvvInput.value;
-        const validationType = stripeValidationType.value;
 
         if (!cardNumber || cardNumber.length < 13) {
             validationStatus.textContent = 'Please enter a valid card number';
             validationStatus.style.color = 'red';
+            logToOutput('❌ Validation failed: Invalid card number format', 'error');
             return;
         }
 
         if (!STRIPE_KEY) {
             validationStatus.textContent = 'Stripe key not available. Please check server configuration.';
             validationStatus.style.color = 'red';
+            logToOutput('❌ Validation failed: Stripe key not available', 'error');
             return;
         }
 
         validationStatus.textContent = 'Validating...';
         validationStatus.style.color = '#007bff';
+        
+        logToOutput(`\n🚀 Starting full validation for card: ${cardNumber}`, 'info');
         
         try {
             let expMonth = null, expYear = null;
@@ -1094,10 +1226,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const parts = expiry.split('/');
                 expMonth = parseInt(parts[0], 10);
                 expYear = 2000 + parseInt(parts[1], 10);
+                logToOutput(`   Using provided expiry: ${expiry}`, 'info');
+            } else {
+                const currentYear = new Date().getFullYear();
+                expMonth = 12;  // December
+                expYear = currentYear + 2;  // 2 years in the future
+                logToOutput(`   No expiry provided, using dummy values for validation: 12/${(currentYear + 2).toString().slice(-2)}`, 'warning');
             }
 
-            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv, STRIPE_KEY, validationType);
-            displayValidationResults(results);
+            if (cvv) {
+                logToOutput(`   Using provided CVV: ${'*'.repeat(cvv.length)}`, 'info');
+            } else {
+                logToOutput(`   No CVV provided, using dummy value: ***`, 'warning');
+            }
+
+            // Always use full validation
+            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv, STRIPE_KEY, 'full');
+            await displayValidationResults(cardNumber, results);
             
             validationStatus.textContent = 'Validation complete';
             validationStatus.style.color = 'green';
@@ -1106,7 +1251,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             validationStatus.textContent = 'Validation failed: ' + error.message;
             validationStatus.style.color = 'red';
             
-            validationOutput.innerHTML = '<p style="color: red;">Error: ' + error.message + '</p>';
+            logToOutput(`❌ Validation failed with error: ${error.message}`, 'error');
         }
     }
 
@@ -1206,31 +1351,102 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function performBatchValidation() {
-        const cardNumbers = cardNumbersOutput.value.trim().split('\n').filter(num => num.trim());
-        const validationType = stripeValidationType.value;
+        const cardLines = cardNumbersOutput.value.trim().split('\n').filter(line => line.trim());
         
-        if (cardNumbers.length === 0) {
+        // Extract card numbers and parse expiry/CVV data from the formatted output
+        const cardData = cardLines.map(line => {
+            const trimmedLine = line.trim();
+            
+            // If the line contains additional data (| EXP: | CVV:), parse it all
+            if (trimmedLine.includes(' | ')) {
+                const parts = trimmedLine.split(' | ');
+                const cardNumber = parts[0];
+                let expiry = null;
+                let cvv = null;
+                
+                // Parse expiry if present
+                const expiryPart = parts.find(part => part.startsWith('EXP: '));
+                if (expiryPart) {
+                    const expiryValue = expiryPart.replace('EXP: ', '');
+                    if (expiryValue.includes('/')) {
+                        const [month, year] = expiryValue.split('/');
+                        expiry = {
+                            month: parseInt(month, 10),
+                            year: 2000 + parseInt(year, 10)
+                        };
+                    }
+                }
+                
+                // Parse CVV if present
+                const cvvPart = parts.find(part => part.startsWith('CVV: '));
+                if (cvvPart) {
+                    cvv = cvvPart.replace('CVV: ', '').trim();
+                    
+                    // Add debug logging to verify CVV extraction
+                    console.debug(`Extracted CVV from "${cvvPart}": "${cvv}"`);
+                    
+                    // Make sure the CVV is only digits
+                    if (!/^\d+$/.test(cvv)) {
+                        console.warn(`Warning: Extracted CVV "${cvv}" contains non-digit characters`);
+                        // Try to extract just the digits
+                        const digitsOnly = cvv.replace(/\D/g, '');
+                        if (digitsOnly) {
+                            console.debug(`Corrected CVV to digits only: "${digitsOnly}"`);
+                            cvv = digitsOnly;
+                        }
+                    }
+                }
+                
+                return {
+                    cardNumber,
+                    expiry,
+                    cvv,
+                    hasAdditionalData: true
+                };
+            } else {
+                // Just a plain card number
+                return {
+                    cardNumber: trimmedLine,
+                    expiry: null,
+                    cvv: null,
+                    hasAdditionalData: false
+                };
+            }
+        }).filter(data => data.cardNumber && /^\d+$/.test(data.cardNumber)); // Only keep valid card numbers
+        
+        if (cardData.length === 0) {
             batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
             batchValidationStatus.style.color = 'red';
+            logToOutput('❌ Batch validation failed: No card numbers to validate', 'error');
             return;
         }
 
         if (!STRIPE_KEY) {
             batchValidationStatus.textContent = 'Stripe key not available. Please check server configuration.';
             batchValidationStatus.style.color = 'red';
+            logToOutput('❌ Batch validation failed: Stripe key not available', 'error');
             return;
         }
 
-        // Show different messages based on validation type
-        const validationTypeText = validationType === 'full' ? 'full Stripe validation' : 'format + BIN validation';
-        batchValidationStatus.textContent = `Performing ${validationTypeText} on ${cardNumbers.length} cards...`;
+        batchValidationStatus.textContent = `Performing full validation on ${cardData.length} cards...`;
         batchValidationStatus.style.color = '#007bff';
         batchValidateBtn.disabled = true;
-        batchValidateBtn.textContent = validationType === 'full' ? 'Full Validating...' : 'Validating...';
+        batchValidateBtn.textContent = 'Validating...';
+
+        logToOutput(`\n🚀 STARTING BATCH VALIDATION OF ${cardData.length} CARDS`, 'header');
+        logToOutput(`📋 Extracted ${cardData.length} card numbers from ${cardLines.length} lines`, 'info');
+        
+        // Count how many have additional data
+        const cardsWithAdditionalData = cardData.filter(data => data.hasAdditionalData).length;
+        if (cardsWithAdditionalData > 0) {
+            logToOutput(`💳 ${cardsWithAdditionalData} cards have expiry/CVV data that will be used in validation`, 'info');
+        }
+        
+        logToOutput('='.repeat(60), 'info');
 
         const results = [];
         const summary = {
-            total: cardNumbers.length,
+            total: cardData.length,
             luhn_valid: 0,
             bin_recognized: 0,
             likely_real: 0,
@@ -1239,21 +1455,55 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
 
         try {
-            // Adjust batch size based on validation type (full validation is slower)
-            const batchSize = validationType === 'full' ? 2 : 5;
-            const delay = validationType === 'full' ? 500 : 100; // Longer delay for full validation
+            // Use smaller batch size for full validation (slower but more thorough)
+            const batchSize = 3;
+            const delay = 750; // Longer delay for full validation
             
-            for (let i = 0; i < cardNumbers.length; i += batchSize) {
-                const batch = cardNumbers.slice(i, i + batchSize);
-                const batchPromises = batch.map(async (cardNumber) => {
-                    const cleanNumber = cardNumber.trim();
+            for (let i = 0; i < cardData.length; i += batchSize) {
+                const batch = cardData.slice(i, i + batchSize);
+                const batchPromises = batch.map(async (cardInfo) => {
+                    const { cardNumber, expiry, cvv } = cardInfo;
                     try {
-                        const result = await comprehensiveCardValidation(cleanNumber, null, null, null, STRIPE_KEY, validationType);
-                        result.cardNumber = cleanNumber;
+                        // Use actual expiry/CVV data if available, otherwise null (will use dummy)
+                        const expMonth = expiry ? expiry.month : null;
+                        const expYear = expiry ? expiry.year : null;
+                        const cvvValue = cvv || null;
+                        
+                        // Log what data we're using for validation
+                        const dataUsed = [];
+                        
+                        // Handle expiry information
+                        if (expiry) {
+                            dataUsed.push(`EXP: ${expiry.month.toString().padStart(2, '0')}/${expiry.year.toString().slice(-2)}`);
+                        }
+                        
+                        // Handle CVV information with more detail
+                        if (cvv) {
+                            // Show CVV length but mask the actual value
+                            dataUsed.push(`CVV: ${'*'.repeat(cvv.length)} (${cvv.length} digits)`);
+                            
+                            // Debug log to verify the actual CVV value (masked in output)
+                            console.debug(`Debug - Card ${cardNumber} has CVV: ${cvv}`);
+                        }
+                        
+                        if (dataUsed.length > 0) {
+                            logToOutput(`🔍 Validating ${cardNumber} with actual data: ${dataUsed.join(', ')}`, 'info');
+                        } else {
+                            logToOutput(`🔍 Validating ${cardNumber} (no expiry/CVV data - using dummy values)`, 'warning');
+                        }
+                        
+                        // Always use full validation with actual card data
+                        const result = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvvValue, STRIPE_KEY, 'full');
+                        result.cardNumber = cardNumber;
+                        
+                        // Log individual card result to verbose output
+                        await displayValidationResults(cardNumber, result);
+                        
                         return result;
                     } catch (error) {
+                        logToOutput(`❌ Error validating ${cardNumber}: ${error.message}`, 'error');
                         return {
-                            cardNumber: cleanNumber,
+                            cardNumber: cardNumber,
                             overall: {
                                 structurally_valid: false,
                                 bin_recognized: false,
@@ -1270,14 +1520,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const batchResults = await Promise.all(batchPromises);
                 results.push(...batchResults);
 
-                // Update progress with validation type context
-                const progressText = validationType === 'full' ? 
-                    `Full validation: ${Math.min(i + batchSize, cardNumbers.length)} of ${cardNumbers.length} cards...` :
-                    `Validated ${Math.min(i + batchSize, cardNumbers.length)} of ${cardNumbers.length} cards...`;
+                // Update progress
+                const progressText = `Full validation: ${Math.min(i + batchSize, cardData.length)} of ${cardData.length} cards completed`;
                 batchValidationStatus.textContent = progressText;
+                logToOutput(`📊 Progress: ${Math.min(i + batchSize, cardData.length)}/${cardData.length} cards validated`, 'info');
                 
-                // Delay between batches - longer for full validation
-                if (i + batchSize < cardNumbers.length) {
+                // Delay between batches
+                if (i + batchSize < cardData.length) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
@@ -1295,13 +1544,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             displayBatchValidationResults({ summary, details: results });
             
-            // Create completion message based on validation type
-            let completionMessage = `Validation complete! ${summary.likely_real} of ${summary.total} cards appear to be real.`;
-            if (STRIPE_KEY && summary.stripe_validated > 0) {
-                const validationTypeLabel = validationType === 'full' ? 'full Stripe validation' : 'Stripe format check';
-                completionMessage += ` ${summary.stripe_validated} passed ${validationTypeLabel}.`;
-            }
+            // Log final summary
+            logToOutput('\n📈 BATCH VALIDATION COMPLETE', 'header');
+            logToOutput(`Total Cards: ${summary.total}`, 'info');
+            logToOutput(`Structurally Valid: ${summary.luhn_valid} (${((summary.luhn_valid / summary.total) * 100).toFixed(1)}%)`, 'info');
+            logToOutput(`BIN Recognized: ${summary.bin_recognized} (${((summary.bin_recognized / summary.total) * 100).toFixed(1)}%)`, 'info');
+            logToOutput(`Stripe Validated: ${summary.stripe_validated} (${((summary.stripe_validated / summary.total) * 100).toFixed(1)}%)`, 'info');
+            logToOutput(`Likely Real Cards: ${summary.likely_real} (${((summary.likely_real / summary.total) * 100).toFixed(1)}%)`, 'success');
             
+            const completionMessage = `Full validation complete! ${summary.likely_real} of ${summary.total} cards appear to be real. ${summary.stripe_validated} passed Stripe validation.`;
             batchValidationStatus.textContent = completionMessage;
             batchValidationStatus.style.color = 'green';
 
@@ -1309,169 +1560,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.error('Batch validation error:', error);
             batchValidationStatus.textContent = 'Batch validation failed: ' + error.message;
             batchValidationStatus.style.color = 'red';
+            logToOutput(`❌ Batch validation failed: ${error.message}`, 'error');
         } finally {
             batchValidateBtn.disabled = false;
-            batchValidateBtn.textContent = 'Validate All Generated';
+            batchValidateBtn.textContent = 'Validate All Generated Cards';
         }
     }
 
-    // Dedicated batch full validation function
-    async function performBatchFullValidation() {
-        const cardNumbers = cardNumbersOutput.value.trim().split('\n').filter(num => num.trim());
-        
-        if (cardNumbers.length === 0) {
-            batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
-            batchValidationStatus.style.color = 'red';
-            return;
-        }
 
-        if (!STRIPE_KEY) {
-            batchValidationStatus.textContent = 'Stripe key not available. Please check server configuration.';
-            batchValidationStatus.style.color = 'red';
-            return;
-        }
-
-        batchValidationStatus.textContent = `Initializing full Stripe validation for ${cardNumbers.length} cards...`;
-        batchValidationStatus.style.color = '#007bff';
-        batchFullValidateBtn.disabled = true;
-        batchValidateBtn.disabled = true;
-        batchFullValidateBtn.textContent = 'Initializing...';
-
-        let batchValidator = null;
-        const results = [];
-        const summary = {
-            total: cardNumbers.length,
-            luhn_valid: 0,
-            bin_recognized: 0,
-            likely_real: 0,
-            stripe_validated: 0,
-            stripe_full_validated: 0,
-            brands: {},
-            errors: 0
-        };
-
-        try {
-            // Initialize the batch validator
-            batchValidator = new StripeBatchValidator(STRIPE_KEY);
-            batchValidationStatus.textContent = 'Initializing Stripe Elements...';
-            await batchValidator.initialize();
-
-            batchValidationStatus.textContent = `Full validation in progress: 0 of ${cardNumbers.length} cards...`;
-            batchFullValidateBtn.textContent = 'Validating...';
-
-            // Process cards individually with full validation
-            for (let i = 0; i < cardNumbers.length; i++) {
-                const cardNumber = cardNumbers[i].trim();
-                
-                try {
-                    // Update progress
-                    batchValidationStatus.textContent = `Full validation: ${i + 1} of ${cardNumbers.length} cards...`;
-                    
-                    // Perform comprehensive validation with enhanced full validation
-                    const luhnResult = await validateCardWithLuhn(cardNumber);
-                    const binResult = await validateCardWithBinLookup(cardNumber);
-                    
-                    // Enhanced full validation
-                    const stripeFullResult = await validateCardWithStripeFull(cardNumber, null, null, null, STRIPE_KEY);
-                    
-                    // Try the batch validator for additional validation
-                    let batchValidationResult = null;
-                    try {
-                        batchValidationResult = await batchValidator.validateCard(cardNumber, 12, new Date().getFullYear() + 2, '123');
-                    } catch (batchError) {
-                        console.warn('Batch validation failed for card:', cardNumber, batchError);
-                        batchValidationResult = {
-                            valid: false,
-                            method: 'stripe_full_batch',
-                            error: 'Batch validation failed: ' + batchError.message
-                        };
-                    }
-
-                    // Combine results
-                    const combinedResult = {
-                        cardNumber: cardNumber,
-                        overall: {
-                            structurally_valid: luhnResult.valid,
-                            bin_recognized: binResult.valid,
-                            processor_valid: stripeFullResult.valid || batchValidationResult.valid,
-                            stripe_full_valid: stripeFullResult.valid,
-                            batch_validation_valid: batchValidationResult.valid,
-                            likely_real_card: luhnResult.valid && binResult.valid
-                        },
-                        detailed_results: {
-                            luhn: luhnResult,
-                            binLookup: binResult,
-                            paymentProcessor: stripeFullResult,
-                            batchValidation: batchValidationResult
-                        }
-                    };
-
-                    results.push(combinedResult);
-
-                    // Update summary
-                    if (combinedResult.overall.structurally_valid) summary.luhn_valid++;
-                    if (combinedResult.overall.bin_recognized) summary.bin_recognized++;
-                    if (combinedResult.overall.likely_real_card) summary.likely_real++;
-                    if (combinedResult.overall.processor_valid) summary.stripe_validated++;
-                    if (combinedResult.overall.stripe_full_valid) summary.stripe_full_validated++;
-                    
-                    const brand = luhnResult.details?.brand || 'unknown';
-                    summary.brands[brand] = (summary.brands[brand] || 0) + 1;
-
-                } catch (error) {
-                    console.error('Error validating card:', cardNumber, error);
-                    summary.errors++;
-                    
-                    // Add error result
-                    results.push({
-                        cardNumber: cardNumber,
-                        overall: {
-                            structurally_valid: false,
-                            bin_recognized: false,
-                            processor_valid: false,
-                            stripe_full_valid: false,
-                            batch_validation_valid: false,
-                            likely_real_card: false
-                        },
-                        detailed_results: {
-                            error: error.message
-                        }
-                    });
-                }
-
-                // Add delay between validations to avoid overwhelming Stripe
-                if (i < cardNumbers.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 750));
-                }
-            }
-
-            // Display results
-            displayBatchValidationResults({ summary, details: results });
-            
-            const successMessage = `Full validation complete! ${summary.stripe_full_validated} of ${summary.total} cards passed full Stripe validation. ${summary.likely_real} appear to be real cards.`;
-            batchValidationStatus.textContent = successMessage;
-            batchValidationStatus.style.color = 'green';
-
-        } catch (error) {
-            console.error('Batch full validation error:', error);
-            batchValidationStatus.textContent = 'Full validation failed: ' + error.message;
-            batchValidationStatus.style.color = 'red';
-            
-            if (results.length > 0) {
-                // Display partial results if any were completed
-                displayBatchValidationResults({ summary, details: results });
-            }
-        } finally {
-            // Clean up the batch validator
-            if (batchValidator) {
-                batchValidator.cleanup();
-            }
-            
-            batchFullValidateBtn.disabled = false;
-            batchValidateBtn.disabled = false;
-            batchFullValidateBtn.textContent = 'Full Stripe Validation (Batch)';
-        }
-    }
 
     function exportBatchResults() {
         const results = batchValidationOutput.innerHTML;
@@ -1554,9 +1650,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Batch validation event listeners
     batchValidateBtn.addEventListener('click', performBatchValidation);
-    batchFullValidateBtn.addEventListener('click', performBatchFullValidation);
     exportBatchBtn.addEventListener('click', exportBatchResults);
+    
+    // Clear log functionality
+    clearLogBtn.addEventListener('click', clearValidationLog);
 
     // Initialize UI state
     updateBrandIcon();
+    updateValidationSummary();
 }); 

@@ -186,8 +186,7 @@
                 </div>
             </div>
             <button id="generate-btn">Generate</button>
-            <button id="batch-validate-btn" style="margin-top: 10px; background-color: #28a745;">Validate All Generated</button>
-            <button id="batch-full-validate-btn" style="margin-top: 5px; background-color: #007bff;">Full Stripe Validation (Batch)</button>
+            <button id="batch-validate-btn" style="margin-top: 10px; background-color: #007bff;">Validate All Generated Cards</button>
             <div id="batch-validation-status" style="margin-top: 10px; font-size: 0.9em;"></div>
         </div>
         <div class="results-container">
@@ -221,13 +220,11 @@
     <div class="container" style="margin-top: 2em;">
         <div class="controls">
             <h3>Card Validation</h3>
-            <div class="control-group" id="stripe-validation-options">
-                <label for="stripe-validation-type">Stripe Validation Type</label>
-                <select id="stripe-validation-type" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%;">
-                    <option value="format">Format Check Only (Fast)</option>
-                    <option value="full">Full Validation (Slower, requires server setup)</option>
-                </select>
-                <small style="color: #666; font-size: 0.8em;">Format check validates card structure. Full validation attempts real Stripe verification.</small>
+            <div class="control-group">
+                <label>Validation Settings</label>
+                <div style="margin-top: 8px; padding: 8px; background-color: #e8f5e8; border: 1px solid #a5d6a7; border-radius: 4px; font-size: 0.9em; color: #2e7d32;">
+                    ✅ <strong>Full Validation Mode:</strong> Always performs comprehensive validation including Luhn, BIN lookup, and Stripe verification
+                </div>
                 <div id="https-warning" style="display: none; margin-top: 8px; padding: 8px; background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; font-size: 0.8em; color: #856404;">
                     ⚠️ <strong>Development Mode:</strong> This is running over HTTP. Live Stripe integrations require HTTPS.
                 </div>
@@ -249,10 +246,16 @@
         </div>
         <div class="results-container">
             <div class="results-header">
-                <h3>Validation Results</h3>
+                <h3>Live Validation Log</h3>
+                <div>
+                    <button id="clear-log-btn" style="background-color: #6c757d; padding: 5px 12px; font-size: 0.8em;">Clear Log</button>
+                </div>
             </div>
-            <div id="validation-output" style="padding: 10px; font-family: 'Roboto Mono', monospace; background-color: #fafafa; border-radius: 8px; border: 1px solid #ccc; min-height: 200px; overflow-y: auto;">
-                <p>Enter a card number and click "Validate Card" to see results...</p>
+            <div id="validation-output" style="padding: 10px; font-family: 'Roboto Mono', monospace; background-color: #1e1e1e; color: #e0e0e0; border-radius: 8px; border: 1px solid #555; min-height: 400px; max-height: 600px; overflow-y: auto; white-space: pre-wrap;">Ready for validation...\n</div>
+            <div style="margin-top: 10px;">
+                <div id="validation-summary" style="padding: 10px; background-color: #f8f9fa; border-radius: 6px; border: 1px solid #dee2e6; font-size: 0.9em;">
+                    <strong>Validation Summary:</strong> No validations performed yet
+                </div>
             </div>
         </div>
     </div>
