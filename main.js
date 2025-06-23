@@ -103,6 +103,49 @@ function generateCardNumbers(binPrefix = "410039", count = 10) {
     return numbers;
 }
 
+
+
+// Enhanced card generation with optional data
+function generateCardsWithOptions(binPrefix = "410039", count = 10, options = {}) {
+    const {
+        includeExpiry = false,
+        includeCvv = false,
+        customExpiry = null,
+        customCvv = null,
+        useRandomExpiry = true,
+        useRandomCvv = true
+    } = options;
+
+    const results = [];
+    const brand = getBrand(binPrefix);
+    const length = brand === "amex" ? 15 : 16;
+
+    for (let i = 0; i < count; i++) {
+        const cardNumber = generateLuhnCard(binPrefix, length);
+        let cardData = { number: cardNumber };
+
+        if (includeExpiry) {
+            if (useRandomExpiry) {
+                cardData.expiry = randomExpiryDate();
+            } else if (customExpiry) {
+                cardData.expiry = customExpiry;
+            }
+        }
+
+        if (includeCvv) {
+            if (useRandomCvv) {
+                cardData.cvv = randomCvv(brand);
+            } else if (customCvv) {
+                cardData.cvv = customCvv;
+            }
+        }
+
+        results.push(cardData);
+    }
+
+    return results;
+}
+
 // Real card validation functions
 async function validateCardWithBinLookup(cardNumber) {
     try {
@@ -164,21 +207,45 @@ async function validateCardWithStripeFormat(cardNumber, stripePublishableKey) {
             };
         }
 
-        // Initialize Stripe to validate the key
-        const stripe = Stripe(stripePublishableKey);
+        // Use the shared Stripe instance
+        const stripe = getStripeInstance();
+        if (!stripe) {
+            throw new Error('Stripe instance not available');
+        }
         
-        // Use basic card number validation
-        const cardNumberValid = /^[0-9]{13,19}$/.test(cardNumber.replace(/\s/g, ''));
-        if (!cardNumberValid) {
+        // Clean and validate card number format
+        const cleanNumber = cardNumber.replace(/\s/g, '');
+        
+        // Basic format validation
+        if (!/^[0-9]{13,19}$/.test(cleanNumber)) {
             return {
                 valid: false,
                 method: 'stripe_format',
-                error: 'Invalid card number format'
+                error: 'Invalid card number format (must be 13-19 digits)'
+            };
+        }
+        
+        // Additional pattern validation
+        if (/^0+$/.test(cleanNumber) || /^1+$/.test(cleanNumber) || /^9+$/.test(cleanNumber)) {
+            return {
+                valid: false,
+                method: 'stripe_format',
+                error: 'Invalid card number pattern'
+            };
+        }
+        
+        // Basic Luhn validation (Stripe requires this)
+        const luhnValid = luhnChecksum(cleanNumber) === 0;
+        if (!luhnValid) {
+            return {
+                valid: false,
+                method: 'stripe_format',
+                error: 'Card number fails Luhn checksum validation'
             };
         }
 
         // Detect card brand using Stripe's brand detection
-        const cardBrand = getStripeCardBrand(cardNumber);
+        const cardBrand = getStripeCardBrand(cleanNumber);
         
         return {
             valid: true,
@@ -223,7 +290,11 @@ class StripeBatchValidator {
         if (this.initialized) return;
 
         try {
-            this.stripe = Stripe(this.stripePublishableKey);
+            // Use the shared Stripe instance
+            this.stripe = getStripeInstance();
+            if (!this.stripe) {
+                throw new Error('Stripe instance not available');
+            }
             this.elements = this.stripe.elements();
             
             // Create persistent container for the card element
@@ -470,14 +541,71 @@ function getStripeCardBrand(cardNumber) {
 }
 
 async function validateCardWithLuhn(cardNumber) {
-    const isLuhnValid = luhnChecksum(cardNumber) === 0;
+    // Basic format validation
+    if (!cardNumber || typeof cardNumber !== 'string') {
+        return {
+            valid: false,
+            method: 'luhn',
+            error: 'Invalid card number format',
+            details: {
+                checksum_valid: false,
+                length: cardNumber ? cardNumber.length : 0,
+                brand: 'unknown'
+            }
+        };
+    }
+    
+    // Remove spaces and check if only digits
+    const cleanNumber = cardNumber.replace(/\s/g, '');
+    if (!/^\d+$/.test(cleanNumber)) {
+        return {
+            valid: false,
+            method: 'luhn',
+            error: 'Card number contains non-digit characters',
+            details: {
+                checksum_valid: false,
+                length: cleanNumber.length,
+                brand: 'unknown'
+            }
+        };
+    }
+    
+    // Check length bounds
+    if (cleanNumber.length < 13 || cleanNumber.length > 19) {
+        return {
+            valid: false,
+            method: 'luhn',
+            error: 'Invalid card number length (must be 13-19 digits)',
+            details: {
+                checksum_valid: false,
+                length: cleanNumber.length,
+                brand: getBrand(cleanNumber)
+            }
+        };
+    }
+    
+    // Reject obvious fake patterns
+    if (/^0+$/.test(cleanNumber) || /^1+$/.test(cleanNumber) || /^9+$/.test(cleanNumber)) {
+        return {
+            valid: false,
+            method: 'luhn',
+            error: 'Invalid card number pattern (all same digits)',
+            details: {
+                checksum_valid: false,
+                length: cleanNumber.length,
+                brand: getBrand(cleanNumber)
+            }
+        };
+    }
+    
+    const isLuhnValid = luhnChecksum(cleanNumber) === 0;
     return {
         valid: isLuhnValid,
         method: 'luhn',
         details: {
             checksum_valid: isLuhnValid,
-            length: cardNumber.length,
-            brand: getBrand(cardNumber)
+            length: cleanNumber.length,
+            brand: getBrand(cleanNumber)
         }
     };
 }
@@ -575,7 +703,61 @@ async function getCardInformation(cardNumber) {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// Global Stripe variables
+let STRIPE_KEY = null;
+let STRIPE_INSTANCE = null;
+
+// Function to fetch Stripe key from backend and initialize Stripe
+async function initializeStripe() {
+    try {
+        let apiUrl = '/api/stripe-key';
+        
+        // If running on a different port or domain, adjust the URL
+        if (window.location.port !== '3001') {
+            apiUrl = `http://localhost:3001/api/stripe-key`;
+        }
+        
+        const response = await fetch(apiUrl);
+        
+        if (!response.ok) {
+            throw new Error(`Failed to fetch Stripe key: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        STRIPE_KEY = data.key;
+        
+        // Initialize Stripe instance only once
+        if (typeof Stripe !== 'undefined' && STRIPE_KEY) {
+            STRIPE_INSTANCE = Stripe(STRIPE_KEY);
+            console.log('✅ Stripe initialized successfully (single instance)');
+            
+            // Note about expected warnings
+            if (window.location.protocol === 'http:') {
+                console.info('💡 Note: Stripe.js HTTP warnings are expected in development. Production should use HTTPS.');
+            }
+        } else {
+            console.warn('⚠️ Stripe.js not loaded or key not available');
+        }
+        
+        return data.key;
+    } catch (error) {
+        console.error('❌ Failed to initialize Stripe:', error);
+        STRIPE_KEY = null;
+        STRIPE_INSTANCE = null;
+        return null;
+    }
+}
+
+// Function to get the Stripe instance (creates only if needed)
+function getStripeInstance() {
+    if (!STRIPE_INSTANCE && STRIPE_KEY && typeof Stripe !== 'undefined') {
+        STRIPE_INSTANCE = Stripe(STRIPE_KEY);
+        console.log('✅ Stripe instance created');
+    }
+    return STRIPE_INSTANCE;
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
     const binInput = document.getElementById('bin');
     const brandIcon = document.getElementById('brand-icon');
     const generateBtn = document.getElementById('generate-btn');
@@ -584,8 +766,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const cardNumbersOutput = document.getElementById('card-numbers-output');
     const countInput = document.getElementById('count');
 
+    // Generation options
+    const includeExpiryCheckbox = document.getElementById('include-expiry');
+    const includeCvvCheckbox = document.getElementById('include-cvv');
+    
+    // Expiry options
+    const expiryOptions = document.getElementById('expiry-options');
+    const expiryTypeRadios = document.querySelectorAll('input[name="expiry-type"]');
+    const customExpiryInput = document.getElementById('custom-expiry');
+    
+    // CVV options
+    const cvvOptions = document.getElementById('cvv-options');
+    const cvvTypeRadios = document.querySelectorAll('input[name="cvv-type"]');
+    const customCvvInput = document.getElementById('custom-cvv');
+
     // Validation elements
-    const stripeKeyInput = document.getElementById('stripe-key');
     const stripeValidationOptions = document.getElementById('stripe-validation-options');
     const stripeValidationType = document.getElementById('stripe-validation-type');
     const validateCardInput = document.getElementById('validate-card');
@@ -602,6 +797,73 @@ document.addEventListener('DOMContentLoaded', () => {
     const batchResultsContainer = document.getElementById('batch-results-container');
     const batchValidationOutput = document.getElementById('batch-validation-output');
     const exportBatchBtn = document.getElementById('export-batch-btn');
+
+    // Initialize Stripe on page load
+    await initializeStripe();
+
+    // Show HTTPS warning if running over HTTP
+    const httpsWarning = document.getElementById('https-warning');
+    if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost') {
+        httpsWarning.style.display = 'block';
+    } else if (window.location.protocol === 'http:') {
+        // Show a lighter warning for localhost development
+        httpsWarning.innerHTML = '💡 <strong>Development Mode:</strong> Running on HTTP localhost. Production requires HTTPS.';
+        httpsWarning.style.backgroundColor = '#e3f2fd';
+        httpsWarning.style.borderColor = '#90caf9';
+        httpsWarning.style.color = '#1565c0';
+        httpsWarning.style.display = 'block';
+    }
+
+    // Helper functions for custom inputs
+    function formatExpiry(value) {
+        value = value.replace(/\D/g, '');
+        if (value.length >= 2) {
+            return value.substring(0, 2) + '/' + value.substring(2, 4);
+        }
+        return value;
+    }
+
+    function formatCvv(value) {
+        return value.replace(/\D/g, '');
+    }
+
+    function toggleExpiryOptions() {
+        const isChecked = includeExpiryCheckbox.checked;
+        expiryOptions.style.display = isChecked ? 'block' : 'none';
+        
+        if (!isChecked) {
+            // Reset to random when unchecked
+            document.querySelector('input[name="expiry-type"][value="random"]').checked = true;
+            customExpiryInput.disabled = true;
+        }
+    }
+
+    function toggleCvvOptions() {
+        const isChecked = includeCvvCheckbox.checked;
+        cvvOptions.style.display = isChecked ? 'block' : 'none';
+        
+        if (!isChecked) {
+            // Reset to random when unchecked
+            document.querySelector('input[name="cvv-type"][value="random"]').checked = true;
+            customCvvInput.disabled = true;
+        }
+    }
+
+    function updateExpiryInputState() {
+        const isCustom = document.querySelector('input[name="expiry-type"][value="custom"]').checked;
+        customExpiryInput.disabled = !isCustom;
+        if (isCustom) {
+            customExpiryInput.focus();
+        }
+    }
+
+    function updateCvvInputState() {
+        const isCustom = document.querySelector('input[name="cvv-type"][value="custom"]').checked;
+        customCvvInput.disabled = !isCustom;
+        if (isCustom) {
+            customCvvInput.focus();
+        }
+    }
 
     const brandLogos = {
         visa: 'V',
@@ -620,11 +882,72 @@ document.addEventListener('DOMContentLoaded', () => {
     function generate() {
         const bin = binInput.value;
         const count = parseInt(countInput.value, 10);
-        if (bin && count > 0) {
+        
+        if (!bin || count <= 0) {
+            cardNumbersOutput.value = '';
+            return;
+        }
+
+        const includeExpiry = includeExpiryCheckbox.checked;
+        const includeCvv = includeCvvCheckbox.checked;
+
+        // Get custom values and preferences
+        const useRandomExpiry = document.querySelector('input[name="expiry-type"][value="random"]').checked;
+        const useRandomCvv = document.querySelector('input[name="cvv-type"][value="random"]').checked;
+        const customExpiry = customExpiryInput.value.trim();
+        const customCvv = customCvvInput.value.trim();
+
+        // Validate custom inputs if they're being used
+        if (includeExpiry && !useRandomExpiry) {
+            if (!customExpiry || !/^\d{2}\/\d{2}$/.test(customExpiry)) {
+                alert('Please enter a valid expiry date in MM/YY format');
+                customExpiryInput.focus();
+                return;
+            }
+        }
+
+        if (includeCvv && !useRandomCvv) {
+            if (!customCvv || !/^\d{3,4}$/.test(customCvv)) {
+                alert('Please enter a valid CVV (3-4 digits)');
+                customCvvInput.focus();
+                return;
+            }
+        }
+
+        // Check if any additional data is requested
+        const hasAdditionalOptions = includeExpiry || includeCvv;
+
+        if (hasAdditionalOptions) {
+            // Use enhanced generation
+            const cards = generateCardsWithOptions(bin, count, {
+                includeExpiry,
+                includeCvv,
+                customExpiry: customExpiry || null,
+                customCvv: customCvv || null,
+                useRandomExpiry,
+                useRandomCvv
+            });
+
+            // Format output with additional data
+            const formattedOutput = cards.map(card => {
+                let line = card.number;
+                
+                if (card.expiry) {
+                    line += ` | EXP: ${card.expiry}`;
+                }
+                
+                if (card.cvv) {
+                    line += ` | CVV: ${card.cvv}`;
+                }
+                
+                return line;
+            });
+
+            cardNumbersOutput.value = formattedOutput.join('\n');
+        } else {
+            // Use simple card number generation
             const numbers = generateCardNumbers(bin, count);
             cardNumbersOutput.value = numbers.join('\n');
-        } else {
-            cardNumbersOutput.value = '';
         }
     }
 
@@ -748,11 +1071,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const cardNumber = validateCardInput.value.replace(/\s/g, '');
         const expiry = validateExpInput.value;
         const cvv = validateCvvInput.value;
-        const stripeKey = stripeKeyInput.value.trim();
         const validationType = stripeValidationType.value;
 
         if (!cardNumber || cardNumber.length < 13) {
             validationStatus.textContent = 'Please enter a valid card number';
+            validationStatus.style.color = 'red';
+            return;
+        }
+
+        if (!STRIPE_KEY) {
+            validationStatus.textContent = 'Stripe key not available. Please check server configuration.';
             validationStatus.style.color = 'red';
             return;
         }
@@ -768,7 +1096,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 expYear = 2000 + parseInt(parts[1], 10);
             }
 
-            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv, stripeKey || null, validationType);
+            const results = await comprehensiveCardValidation(cardNumber, expMonth, expYear, cvv, STRIPE_KEY, validationType);
             displayValidationResults(results);
             
             validationStatus.textContent = 'Validation complete';
@@ -879,11 +1207,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function performBatchValidation() {
         const cardNumbers = cardNumbersOutput.value.trim().split('\n').filter(num => num.trim());
-        const stripeKey = stripeKeyInput.value.trim();
         const validationType = stripeValidationType.value;
         
         if (cardNumbers.length === 0) {
             batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
+            batchValidationStatus.style.color = 'red';
+            return;
+        }
+
+        if (!STRIPE_KEY) {
+            batchValidationStatus.textContent = 'Stripe key not available. Please check server configuration.';
             batchValidationStatus.style.color = 'red';
             return;
         }
@@ -915,7 +1248,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const batchPromises = batch.map(async (cardNumber) => {
                     const cleanNumber = cardNumber.trim();
                     try {
-                        const result = await comprehensiveCardValidation(cleanNumber, null, null, null, stripeKey || null, validationType);
+                        const result = await comprehensiveCardValidation(cleanNumber, null, null, null, STRIPE_KEY, validationType);
                         result.cardNumber = cleanNumber;
                         return result;
                     } catch (error) {
@@ -964,7 +1297,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Create completion message based on validation type
             let completionMessage = `Validation complete! ${summary.likely_real} of ${summary.total} cards appear to be real.`;
-            if (stripeKey && summary.stripe_validated > 0) {
+            if (STRIPE_KEY && summary.stripe_validated > 0) {
                 const validationTypeLabel = validationType === 'full' ? 'full Stripe validation' : 'Stripe format check';
                 completionMessage += ` ${summary.stripe_validated} passed ${validationTypeLabel}.`;
             }
@@ -985,7 +1318,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Dedicated batch full validation function
     async function performBatchFullValidation() {
         const cardNumbers = cardNumbersOutput.value.trim().split('\n').filter(num => num.trim());
-        const stripeKey = stripeKeyInput.value.trim();
         
         if (cardNumbers.length === 0) {
             batchValidationStatus.textContent = 'No card numbers to validate. Generate some cards first.';
@@ -993,8 +1325,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (!stripeKey) {
-            batchValidationStatus.textContent = 'Please enter your Stripe publishable key first.';
+        if (!STRIPE_KEY) {
+            batchValidationStatus.textContent = 'Stripe key not available. Please check server configuration.';
             batchValidationStatus.style.color = 'red';
             return;
         }
@@ -1020,7 +1352,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             // Initialize the batch validator
-            batchValidator = new StripeBatchValidator(stripeKey);
+            batchValidator = new StripeBatchValidator(STRIPE_KEY);
             batchValidationStatus.textContent = 'Initializing Stripe Elements...';
             await batchValidator.initialize();
 
@@ -1040,7 +1372,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const binResult = await validateCardWithBinLookup(cardNumber);
                     
                     // Enhanced full validation
-                    const stripeFullResult = await validateCardWithStripeFull(cardNumber, null, null, null, stripeKey);
+                    const stripeFullResult = await validateCardWithStripeFull(cardNumber, null, null, null, STRIPE_KEY);
                     
                     // Try the batch validator for additional validation
                     let batchValidationResult = null;
@@ -1176,18 +1508,34 @@ document.addEventListener('DOMContentLoaded', () => {
         URL.revokeObjectURL(url);
     }
 
-    // Show/hide Stripe validation options based on key input
-    function toggleStripeOptions() {
-        const hasKey = stripeKeyInput.value.trim().length > 0;
-        stripeValidationOptions.style.display = hasKey ? 'flex' : 'none';
-        batchFullValidateBtn.style.display = hasKey ? 'block' : 'none';
-    }
+
 
     // Event listeners
     binInput.addEventListener('input', updateBrandIcon);
     generateBtn.addEventListener('click', generate);
     copyBtn.addEventListener('click', copyToClipboard);
-    stripeKeyInput.addEventListener('input', toggleStripeOptions);
+
+    // Generation options event listeners
+    includeExpiryCheckbox.addEventListener('change', toggleExpiryOptions);
+    includeCvvCheckbox.addEventListener('change', toggleCvvOptions);
+    
+    // Radio button listeners
+    expiryTypeRadios.forEach(radio => {
+        radio.addEventListener('change', updateExpiryInputState);
+    });
+    
+    cvvTypeRadios.forEach(radio => {
+        radio.addEventListener('change', updateCvvInputState);
+    });
+
+    // Input formatting
+    customExpiryInput.addEventListener('input', (e) => {
+        e.target.value = formatExpiry(e.target.value);
+    });
+
+    customCvvInput.addEventListener('input', (e) => {
+        e.target.value = formatCvv(e.target.value);
+    });
 
     // Validation event listeners
     validateCardInput.addEventListener('input', (e) => {
@@ -1211,5 +1559,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize UI state
     updateBrandIcon();
-    toggleStripeOptions();
 }); 

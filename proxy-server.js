@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const path = require('path');
+require('dotenv').config();
 
 const app = express();
 const PORT = 3001;
@@ -273,6 +274,18 @@ app.get('/api/bin/:bin', async (req, res) => {
         bin: bin,
         fallback: true
     });
+});
+
+// Stripe key endpoint
+app.get('/api/stripe-key', (req, res) => {
+    const stripeKey = process.env.STRIPE_PUBLISHABLE_KEY;
+    if (!stripeKey) {
+        return res.status(500).json({ 
+            error: 'Stripe key not configured',
+            message: 'STRIPE_PUBLISHABLE_KEY environment variable not found'
+        });
+    }
+    res.json({ key: stripeKey });
 });
 
 // Health check endpoint
